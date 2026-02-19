@@ -56,7 +56,7 @@ void issue_new_request(client_struct *client)
 }
 
 /* join competition */
-void join(client_struct *client)
+static void join(client_struct *client)
 {
 	/* update total weight of al l active clients */
 	TotalWeight += client->weight;
@@ -204,13 +204,18 @@ UEI_DEFINE(uei);
 
 struct {
 	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
-	__type(key, struct task_struct);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
 	__type(value, client_struct);
 } client_map SEC(".maps");
 
 void BPF_STRUCT_OPS(eevdf_enqueue, struct task_struct *p, u64 enq_flags)
 {
     client_struct *client = bpf_task_storage_get(&client_map, p, 0, 0);
+    if (!client) {
+        scx_bpf_error("Failed to get client");
+        return;
+    }
     if (!client->joined) {
 	client->p = p;
 	client->joined = true;
