@@ -241,16 +241,19 @@ void BPF_STRUCT_OPS(eevdf_quiescent, struct task_struct *p, u64 deq_flags)
 	}
 }
 
-void BPF_STRUCT_OPS(eevdf_enable, struct task_struct *p)
+s32 BPF_STRUCT_OPS(eevdf_init_task, struct task_struct *p, struct scx_init_task_args *args)
 {
 	client_struct *client = bpf_task_storage_get(&client_map, p, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
 
-	if (!client)
-		return;
+	if (!client) {
+		bpf_printk("Failed to create client for task: %s (pid: %d)", p->comm, p->pid);
+		return -ENOMEM;
+	}
 	client->p = p;
 	client->lag = 0;
 	client->weight = p->scx.weight;
 	client->joined = false;
+	return 0;
 }
 
 void BPF_STRUCT_OPS(eevdf_dispatch, s32 cpu, struct task_struct *prev)
@@ -273,7 +276,7 @@ SCX_OPS_DEFINE(eevdf_ops,
 	       .enqueue		= (void *)eevdf_enqueue,
 	       .dispatch		= (void *)eevdf_dispatch,
 	       .quiescent	= (void *)eevdf_quiescent,
-	       .enable		= (void *)eevdf_enable,
+	       .init_task	= (void *)eevdf_init_task,
 	       .init		= (void *)eevdf_init,
 	       .exit		= (void *)eevdf_exit,
 	       .name		= "eevdf");
