@@ -35,10 +35,10 @@ typedef struct _client {
 	struct task_struct *p;
 } client_struct;
 
-void insert_req(client_struct *client);
+void insert_req(struct task_struct *task, client_struct *client);
 time_v get_current_vt();
 void delete_req(client_struct *client);
-int allocate(client_struct *client);
+int allocate(struct task_struct *task, client_struct *client);
 void update_lag(client_struct *client, int used);
 s64 compute_lag_adjustment(int lag, int weight);
 
@@ -48,22 +48,22 @@ time_v VirtualTime = 0; /* virtual time */
 time_v QuantumSize = 10000000; /* 10ms - TODO: make it configurable */
 int TotalWeight = 0; /* total weight of al l active clients */
 
-void issue_new_request(client_struct *client)
+void issue_new_request(client_struct *client, struct task_struct *task)
 {
 	client->req_ve = VirtualTime;
 	client->req_vd = client->req_ve + QuantumSize/(u64)client->weight;
-	insert_req(client);
+	insert_req(task, client);
 }
 
 /* join competition */
-static void join(client_struct *client)
+static void join(client_struct *client, struct task_struct *task)
 {
 	/* update total weight of al l active clients */
 	TotalWeight += client->weight;
 	/* update virtual time according to client lag */
 	VirtualTime = get_current_vt() - compute_lag_adjustment(client->lag, TotalWeight);
 	/* issue request */
-	issue_new_request(client);
+	issue_new_request(client, task);
 }
 
 /* leave competition */
@@ -91,19 +91,19 @@ void change_weight(client_struct *client, int new_weight)
 }
 
 /* dispatch function */
-void EEVDF_dispatch(client_struct *client)
+void EEVDF_dispatch(client_struct *client, struct task_struct *task)
 {
 	int used;
 	/* get eligible request with earliest virtual dead line */
 	//client = get_req(get_curreent_vt()); // we don't need to do this, the queue takes care of it
 	/* allocate resource to client with earliest eligible virtual dead line */
-	used = allocate(client);
+	used = allocate(task, client);
 	/* update client's lag */
 	update_lag(client, used);
 	/* current request has been fulfilled; delete it */
 	delete_req(client);
 	/* issue new request */
-	issue_new_request(client);
+	issue_new_request(client, task);
 }
 
 /* -----------------------------------------------------------------
@@ -125,9 +125,9 @@ time_v get_current_vt()
 	VirtualTime += (u64)num_online_cpus()*delta/(u64)TotalWeight;
 	return VirtualTime;
 }
-void insert_req(client_struct *client)
+void insert_req(struct task_struct *task, client_struct *client)
 {
-	scx_bpf_dsq_insert_vtime(client->p, SHARED_DSQ, QuantumSize, client->req_vd, 0);
+	scx_bpf_dsq_insert_vtime(task, SHARED_DSQ, QuantumSize, client->req_vd, 0);
 }
 
 void delete_req(client_struct *client)
@@ -135,9 +135,9 @@ void delete_req(client_struct *client)
 	/* there is no way to remove it from the DSQ */
 }
 
-int allocate(client_struct *client)
+int allocate(struct task_struct *task, client_struct *client)
 {
-	return QuantumSize - client->p->scx.slice;
+	return QuantumSize - task->scx.slice;
 }
 
 void update_lag(client_struct *client, int used)
@@ -219,12 +219,12 @@ void BPF_STRUCT_OPS(eevdf_enqueue, struct task_struct *p, u64 enq_flags)
     if (!client->joined) {
 	client->p = p;
 	client->joined = true;
-	join(client);
+	join(client, p);
 	stat_update(1, 0, 1);
 	return;
     }
 
-    EEVDF_dispatch(client);
+    EEVDF_dispatch(client, p);
     stat_update(1, 0, 0);
 }
 
@@ -232,6 +232,8 @@ void BPF_STRUCT_OPS(eevdf_quiescent, struct task_struct *p, u64 deq_flags)
 {
 	client_struct *client = bpf_task_storage_get(&client_map, p, 0, 0);
 
+	if (!client)
+		return;
 	if (!(deq_flags & SCX_DEQ_SLEEP)) {
 		leave(client);
 		client->joined = false;
@@ -242,6 +244,9 @@ void BPF_STRUCT_OPS(eevdf_quiescent, struct task_struct *p, u64 deq_flags)
 void BPF_STRUCT_OPS(eevdf_enable, struct task_struct *p)
 {
 	client_struct *client = bpf_task_storage_get(&client_map, p, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
+
+	if (!client)
+		return;
 	client->p = p;
 	client->lag = 0;
 	client->weight = p->scx.weight;
