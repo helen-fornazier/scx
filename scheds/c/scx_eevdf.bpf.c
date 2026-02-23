@@ -234,6 +234,10 @@ void BPF_STRUCT_OPS(eevdf_quiescent, struct task_struct *p, u64 deq_flags)
 
 	if (!client)
 		return;
+
+	if (!client->joined)
+		return;
+
 	if (!(deq_flags & SCX_DEQ_SLEEP)) {
 		leave(client);
 		client->joined = false;
@@ -249,6 +253,7 @@ s32 BPF_STRUCT_OPS(eevdf_init_task, struct task_struct *p, struct scx_init_task_
 		bpf_printk("Failed to create client for task: %s (pid: %d)", p->comm, p->pid);
 		return -ENOMEM;
 	}
+
 	client->p = p;
 	client->lag = 0;
 	client->weight = p->scx.weight;
