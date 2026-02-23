@@ -15,6 +15,7 @@ static volatile int exit_req;
 
 struct stats {
 	u64 VirtualTime;
+	u64 LastDispatchedVDTime;
 	u64 TotalWeight;
 	u64 n_enqueued;
 	u64 n_dispatched;
@@ -54,8 +55,9 @@ restart:
 			fprintf(stderr, "Failed to lookup stats\n");
 			break;
 		}
-		printf("VirtualTime=%llu TotalWeight=%llu n_enqueued=%llu n_dispatched=%llu n_joined=%llu\n",
-		       stats.VirtualTime, stats.TotalWeight, stats.n_enqueued, stats.n_dispatched, stats.n_joined);
+		s64 diff = stats.LastDispatchedVDTime - stats.VirtualTime;
+		printf("VirtualTime=%lu LastDispatchedVDTime=%lu Diff=%ld TotalWeight=%lu n_enqueued=%lu n_dispatched=%lu n_joined=%lu\n",
+		       stats.VirtualTime, stats.LastDispatchedVDTime, diff, stats.TotalWeight, stats.n_enqueued, stats.n_dispatched, stats.n_joined);
 		fflush(stdout);
 		sleep(1);
 	}

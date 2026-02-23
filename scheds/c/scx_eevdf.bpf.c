@@ -166,6 +166,7 @@ s64 compute_lag_adjustment(int lag, int weight)
 
 struct stats {
 	time_v VirtualTime;
+	time_v LastDispatchedVDTime;
 	time_v TotalWeight;
 	u64 n_enqueued;
 	u64 n_dispatched;
@@ -179,7 +180,7 @@ struct {
 	__uint(max_entries, 1);
  } stats_map SEC(".maps");
 
-static void stat_update(int n_enqueued, int n_dispatched, int n_joined)
+static void stat_update(int n_enqueued, int n_dispatched, int n_joined, time_v last_dispatched_vd_time)
 {
 	__u32 key = 0;
 	struct stats *stats = bpf_map_lookup_elem(&stats_map, &key);
@@ -188,6 +189,8 @@ static void stat_update(int n_enqueued, int n_dispatched, int n_joined)
 		return;
 	}
 	stats->VirtualTime = VirtualTime;
+	if (last_dispatched_vd_time)
+		stats->LastDispatchedVDTime = last_dispatched_vd_time;
 	stats->TotalWeight = TotalWeight;
 	stats->n_enqueued += n_enqueued;
 	stats->n_dispatched += n_dispatched;
@@ -220,12 +223,12 @@ void BPF_STRUCT_OPS(eevdf_enqueue, struct task_struct *p, u64 enq_flags)
 	client->p = p;
 	client->joined = true;
 	join(client, p);
-	stat_update(1, 0, 1);
+	stat_update(1, 0, 1, 0);
 	return;
     }
 
     EEVDF_dispatch(client, p);
-    stat_update(1, 0, 0);
+    stat_update(1, 0, 0, 0);
 }
 
 void BPF_STRUCT_OPS(eevdf_quiescent, struct task_struct *p, u64 deq_flags)
@@ -238,11 +241,11 @@ void BPF_STRUCT_OPS(eevdf_quiescent, struct task_struct *p, u64 deq_flags)
 	if (!client->joined)
 		return;
 
-	if (!(deq_flags & SCX_DEQ_SLEEP)) {
+	//if (!(deq_flags & SCX_DEQ_SLEEP)) {
 		leave(client);
 		client->joined = false;
-		stat_update(0, 0, -1);
-	}
+		stat_update(0, 0, -1, 0);
+	//}
 }
 
 s32 BPF_STRUCT_OPS(eevdf_init_task, struct task_struct *p, struct scx_init_task_args *args)
@@ -264,7 +267,7 @@ s32 BPF_STRUCT_OPS(eevdf_init_task, struct task_struct *p, struct scx_init_task_
 void BPF_STRUCT_OPS(eevdf_dispatch, s32 cpu, struct task_struct *prev)
 {
 	scx_bpf_dsq_move_to_local(SHARED_DSQ);
-	stat_update(0, 1, 0);
+	stat_update(0, 1, 0, 0);
 }
 
 s32 BPF_STRUCT_OPS_SLEEPABLE(eevdf_init)
@@ -277,9 +280,20 @@ void BPF_STRUCT_OPS(eevdf_exit, struct scx_exit_info *ei)
 	UEI_RECORD(uei, ei);
 }
 
+void BPF_STRUCT_OPS(eevdf_running, struct task_struct *p)
+{
+	client_struct *client = bpf_task_storage_get(&client_map, p, 0, 0);
+
+	if (!client)
+		return;
+
+	stat_update(0, 0, 0, client->req_vd);
+}
+
 SCX_OPS_DEFINE(eevdf_ops,
 	       .enqueue		= (void *)eevdf_enqueue,
-	       .dispatch		= (void *)eevdf_dispatch,
+	       .dispatch	= (void *)eevdf_dispatch,
+	       .running		= (void *)eevdf_running,
 	       .quiescent	= (void *)eevdf_quiescent,
 	       .init_task	= (void *)eevdf_init_task,
 	       .init		= (void *)eevdf_init,
